@@ -4,9 +4,13 @@ from fastapi.responses import HTMLResponse
 import httpx
 import re
 from datetime import datetime
+import os
 
 app = FastAPI()
-templates = Jinja2Templates(directory="templates")
+
+# ✅ FIX: absolute path for templates (Render issue solve)
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))
 
 
 # 🔁 Convert URL to m.vk.com
@@ -20,11 +24,14 @@ def convert_to_mobile(url):
     return url
 
 
-# 🔍 Extract data
+# 🔍 Extract data safely
 def extract_data(html, original_url):
     def find(pattern):
-        match = re.search(pattern, html)
-        return match.group(1) if match else "N/A"
+        try:
+            match = re.search(pattern, html)
+            return match.group(1) if match else "N/A"
+        except:
+            return "N/A"
 
     title = find(r'"md_title":"(.*?)"')
     if title == "N/A":
@@ -36,18 +43,27 @@ def extract_data(html, original_url):
 
     timestamp = find(r'"date":(\d+)')
     if timestamp != "N/A":
-        date = datetime.fromtimestamp(int(timestamp)).strftime('%d:%m:%Y')
+        try:
+            date = datetime.fromtimestamp(int(timestamp)).strftime('%d:%m:%Y')
+        except:
+            date = "N/A"
     else:
         date = "N/A"
 
     # ⏱ duration convert
     if duration != "N/A":
-        sec = int(duration)
-        duration = str(datetime.utcfromtimestamp(sec).strftime('%H:%M:%S'))
+        try:
+            sec = int(duration)
+            duration = str(datetime.utcfromtimestamp(sec).strftime('%H:%M:%S'))
+        except:
+            duration = "N/A"
 
     # 👤 profile
     owner = find(r'"owner_id":(-?\d+)')
-    profile_url = f"https://vk.com/id{owner}" if owner != "N/A" else "N/A"
+    if owner != "N/A":
+        profile_url = f"https://vk.com/id{owner}"
+    else:
+        profile_url = "N/A"
 
     return {
         "url": original_url,
@@ -63,32 +79,38 @@ def extract_data(html, original_url):
 # 🌐 Home Page
 @app.get("/", response_class=HTMLResponse)
 async def home(request: Request):
-    return templates.TemplateResponse("index.html", {"request": request})
+    try:
+        return templates.TemplateResponse("index.html", {"request": request})
+    except Exception as e:
+        return HTMLResponse(content=f"Template Error: {str(e)}", status_code=500)
 
 
-# 🚀 Scrape API (ONE BY ONE)
+# 🚀 Scrape API (one-by-one)
 @app.post("/api/scrape")
 async def scrape(request: Request):
-    data = await request.json()
-    url = data.get("url")
-
-    mobile_url = convert_to_mobile(url)
-
-    html = ""
-
     try:
-        async with httpx.AsyncClient(headers={
-            "User-Agent": "Mozilla/5.0"
-        }) as client:
-            res = await client.get(mobile_url, timeout=10)
-            html = res.text
+        data = await request.json()
+        url = data.get("url")
 
-            # 🤖 human check fallback
-            if "I'm human" in html or "captcha" in html:
-                html = res.text  # fallback simple (Render me playwright heavy hota h)
+        if not url:
+            return {"error": "No URL provided"}
 
-    except:
+        mobile_url = convert_to_mobile(url)
+
         html = ""
 
-    result = extract_data(html, url)
-    return result
+        try:
+            async with httpx.AsyncClient(headers={
+                "User-Agent": "Mozilla/5.0"
+            }) as client:
+                res = await client.get(mobile_url, timeout=10)
+                html = res.text
+
+        except:
+            html = ""
+
+        result = extract_data(html, url)
+        return result
+
+    except Exception as e:
+        return {"error": str(e)}
