@@ -1,19 +1,17 @@
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, FileResponse
-from playwright.async_api import async_playwright
+import httpx
 import re
 from datetime import datetime
 
 app = FastAPI()
 
 
-# 🌐 Home Page
 @app.get("/", response_class=HTMLResponse)
 async def home():
     return FileResponse("templates/index.html")
 
 
-# 🔁 Convert URL
 def convert_to_mobile(url):
     if "vkvideo" in url:
         url = url.replace("vkvideo.ru", "vk.com").replace("vkvideo.com", "vk.com")
@@ -24,22 +22,6 @@ def convert_to_mobile(url):
     return url
 
 
-# 🤖 Fetch with browser (IMPORTANT)
-async def fetch_html(url):
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
-        page = await browser.new_page()
-
-        await page.goto(url, timeout=60000)
-        await page.wait_for_timeout(3000)
-
-        content = await page.content()
-        await browser.close()
-
-        return content
-
-
-# 🔍 Extract data (VIEW SOURCE LIKE)
 def extract_data(html, original_url):
 
     def find(pattern):
@@ -52,14 +34,10 @@ def extract_data(html, original_url):
     uploader = find(r'"md_author":"(.*?)"')
 
     timestamp = find(r'"date":(\d+)')
-    if timestamp != "N/A":
-        date = datetime.fromtimestamp(int(timestamp)).strftime('%d:%m:%Y')
-    else:
-        date = "N/A"
+    date = datetime.fromtimestamp(int(timestamp)).strftime('%d:%m:%Y') if timestamp != "N/A" else "N/A"
 
     if duration != "N/A":
-        sec = int(duration)
-        duration = str(datetime.utcfromtimestamp(sec).strftime('%H:%M:%S'))
+        duration = str(datetime.utcfromtimestamp(int(duration)).strftime('%H:%M:%S'))
 
     owner = find(r'"owner_id":(-?\d+)')
     profile = f"https://vk.com/id{owner}" if owner != "N/A" else "N/A"
@@ -75,7 +53,6 @@ def extract_data(html, original_url):
     }
 
 
-# 🚀 API
 @app.post("/api/scrape")
 async def scrape(request: Request):
     data = await request.json()
@@ -83,6 +60,13 @@ async def scrape(request: Request):
 
     mobile_url = convert_to_mobile(url)
 
-    html = await fetch_html(mobile_url)
+    headers = {
+        "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X)",
+        "Accept-Language": "en-US,en;q=0.9"
+    }
+
+    async with httpx.AsyncClient() as client:
+        res = await client.get(mobile_url, headers=headers, timeout=15)
+        html = res.text
 
     return extract_data(html, url)
