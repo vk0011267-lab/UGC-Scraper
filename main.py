@@ -1,8 +1,7 @@
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, FileResponse
-import httpx
+from playwright.async_api import async_playwright
 import re
-import json
 from datetime import datetime
 
 app = FastAPI()
@@ -25,54 +24,45 @@ def convert_to_mobile(url):
     return url
 
 
-# 🔍 Extract using JSON (IMPORTANT FIX)
+# 🤖 Fetch with browser (IMPORTANT)
+async def fetch_html(url):
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        page = await browser.new_page()
+
+        await page.goto(url, timeout=60000)
+        await page.wait_for_timeout(3000)
+
+        content = await page.content()
+        await browser.close()
+
+        return content
+
+
+# 🔍 Extract data (VIEW SOURCE LIKE)
 def extract_data(html, original_url):
 
-    title = "N/A"
-    views = "N/A"
-    duration = "N/A"
-    uploader = "N/A"
-    date = "N/A"
-    profile_url = "N/A"
+    def find(pattern):
+        match = re.search(pattern, html)
+        return match.group(1) if match else "N/A"
 
-    try:
-        # 🔥 Extract JSON block
-        json_match = re.search(r'playerParams\s*=\s*(\{.*?\});', html)
+    title = find(r'"md_title":"(.*?)"')
+    views = find(r'"views":(\d+)')
+    duration = find(r'"duration":(\d+)')
+    uploader = find(r'"md_author":"(.*?)"')
 
-        if json_match:
-            data = json.loads(json_match.group(1))
+    timestamp = find(r'"date":(\d+)')
+    if timestamp != "N/A":
+        date = datetime.fromtimestamp(int(timestamp)).strftime('%d:%m:%Y')
+    else:
+        date = "N/A"
 
-            video = data.get("params", [{}])[0]
+    if duration != "N/A":
+        sec = int(duration)
+        duration = str(datetime.utcfromtimestamp(sec).strftime('%H:%M:%S'))
 
-            title = video.get("md_title", "N/A")
-            views = video.get("views", "N/A")
-
-            # duration
-            dur = video.get("duration")
-            if dur:
-                duration = str(datetime.utcfromtimestamp(int(dur)).strftime('%H:%M:%S'))
-
-            # uploader
-            uploader = video.get("md_author", "N/A")
-
-            # date
-            timestamp = video.get("date")
-            if timestamp:
-                date = datetime.fromtimestamp(int(timestamp)).strftime('%d:%m:%Y')
-
-            # profile
-            owner = video.get("owner_id")
-            if owner:
-                profile_url = f"https://vk.com/id{owner}"
-
-    except:
-        pass
-
-    # 🔁 fallback (title only)
-    if title == "N/A":
-        match = re.search(r'<title>(.*?)</title>', html)
-        if match:
-            title = match.group(1)
+    owner = find(r'"owner_id":(-?\d+)')
+    profile = f"https://vk.com/id{owner}" if owner != "N/A" else "N/A"
 
     return {
         "url": original_url,
@@ -80,7 +70,7 @@ def extract_data(html, original_url):
         "title": title,
         "views": views,
         "date": date,
-        "profile": profile_url,
+        "profile": profile,
         "uploader": uploader
     }
 
@@ -88,19 +78,11 @@ def extract_data(html, original_url):
 # 🚀 API
 @app.post("/api/scrape")
 async def scrape(request: Request):
-    try:
-        data = await request.json()
-        url = data.get("url")
+    data = await request.json()
+    url = data.get("url")
 
-        mobile_url = convert_to_mobile(url)
+    mobile_url = convert_to_mobile(url)
 
-        async with httpx.AsyncClient(headers={
-            "User-Agent": "Mozilla/5.0"
-        }) as client:
-            res = await client.get(mobile_url, timeout=10)
-            html = res.text
+    html = await fetch_html(mobile_url)
 
-        return extract_data(html, url)
-
-    except Exception as e:
-        return {"error": str(e)}
+    return extract_data(html, url)
