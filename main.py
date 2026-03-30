@@ -1,16 +1,16 @@
 from fastapi import FastAPI, Request
-from fastapi.templating import Jinja2Templates
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, FileResponse
 import httpx
 import re
 from datetime import datetime
-import os
 
 app = FastAPI()
 
-# ✅ FIX: absolute path for templates (Render issue solve)
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))
+
+# 🌐 Home Page (NO JINJA - DIRECT HTML SERVE)
+@app.get("/", response_class=HTMLResponse)
+async def home():
+    return FileResponse("templates/index.html")
 
 
 # 🔁 Convert URL to m.vk.com
@@ -33,14 +33,27 @@ def extract_data(html, original_url):
         except:
             return "N/A"
 
+    # 📌 Title
     title = find(r'"md_title":"(.*?)"')
     if title == "N/A":
         title = find(r'<title>(.*?)</title>')
 
+    # 👁 Views
     views = find(r'"views":(\d+)')
+
+    # ⏱ Duration
     duration = find(r'"duration":(\d+)')
+    if duration != "N/A":
+        try:
+            sec = int(duration)
+            duration = str(datetime.utcfromtimestamp(sec).strftime('%H:%M:%S'))
+        except:
+            duration = "N/A"
+
+    # 👤 Uploader
     uploader = find(r'"md_author":"(.*?)"')
 
+    # 📅 Date
     timestamp = find(r'"date":(\d+)')
     if timestamp != "N/A":
         try:
@@ -50,15 +63,7 @@ def extract_data(html, original_url):
     else:
         date = "N/A"
 
-    # ⏱ duration convert
-    if duration != "N/A":
-        try:
-            sec = int(duration)
-            duration = str(datetime.utcfromtimestamp(sec).strftime('%H:%M:%S'))
-        except:
-            duration = "N/A"
-
-    # 👤 profile
+    # 🔗 Profile URL
     owner = find(r'"owner_id":(-?\d+)')
     if owner != "N/A":
         profile_url = f"https://vk.com/id{owner}"
@@ -74,15 +79,6 @@ def extract_data(html, original_url):
         "profile": profile_url,
         "uploader": uploader
     }
-
-
-# 🌐 Home Page
-@app.get("/", response_class=HTMLResponse)
-async def home(request: Request):
-    try:
-        return templates.TemplateResponse("index.html", {"request": request})
-    except Exception as e:
-        return HTMLResponse(content=f"Template Error: {str(e)}", status_code=500)
 
 
 # 🚀 Scrape API (one-by-one)
@@ -105,7 +101,6 @@ async def scrape(request: Request):
             }) as client:
                 res = await client.get(mobile_url, timeout=10)
                 html = res.text
-
         except:
             html = ""
 
